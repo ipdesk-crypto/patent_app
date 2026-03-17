@@ -1,110 +1,133 @@
 import streamlit as st
+import pandas as pd
 import chromadb
 from sentence_transformers import SentenceTransformer
-import requests
-from bs4 import BeautifulSoup
+import PyPDF2
+import os
 
-# --- PAGE CONFIGURATION (Must be the first Streamlit command) ---
-st.set_page_config(
-    page_title="ProSearch | Patent Intelligence",
-    page_icon="logo.png", # Your logo in the browser tab!
-    layout="wide",        # Uses the full width of the screen
-    initial_sidebar_state="expanded"
-)
+# 1. Setup App Look & Feel
+st.set_page_config(page_title="Patent Intelligence", page_icon="logo.png", layout="wide")
 
-# --- CUSTOM CSS FOR SLEEK LOOK ---
-st.markdown("""
-    <style>
-    /* Makes buttons look modern */
-    .stButton>button {
-        width: 100%;
-        border-radius: 5px;
-        background-color: #004aad;
-        color: white;
-    }
-    /* Cleans up the top padding */
-    .block-container {
-        padding-top: 2rem;
-    }
-    </style>
-""", unsafe_allow_html=True)
+# 2. ALL-IN-ONE CLOUD DATABASE BUILDER
+# This tells Streamlit to only build the database once and remember it while the app is awake
+@st.cache_resource(show_spinner="Cloud Engine is reading patents.zip and building the AI database. Please wait...")
+def initialize_system():
+    # Load AI Model
+    model = SentenceTransformer('all-MiniLM-L6-v2')
+    
+    # Setup Temporary Cloud Database
+    chroma_client = chromadb.Client() # In-memory database for the cloud
+    collection = chroma_client.create_collection(name="uae_patents")
+    
+    # Read the zipped file directly
+    df = pd.read_csv("patents.zip", compression='zip')
+    df = df.fillna("N/A")
+    
+    documents = []
+    metadatas = []
+    ids = []
+    
+    for index, row in df.iterrows():
+        combined_text = f"Title: {row['Title in English']}. Abstract: {row['Abstract in English']}"
+        documents.append(combined_text)
+        
+        metadatas.append({
+            "Application Number": str(row['Application Number']),
+            "Application Date": str(row['Application Date']),
+            "Title": str(row['Title in English']),
+            "Abstract": str(row['Abstract in English']),
+            "Priority Date": str(row['Priority Date']),
+            "Earliest Priority Date": str(row['Earliest Priority Date']),
+            "Priority Country": str(row['Country Name (Priority)']),
+            "Priority Number": str(row['Priority Number'])
+        })
+        ids.append(str(row['Application Number']))
+        
+    # Convert text to vectors
+    embeddings = model.encode(documents).tolist()
+    
+    # Save to cloud database
+    collection.add(embeddings=embeddings, metadatas=metadatas, ids=ids)
+    
+    return model, collection
 
-# --- SETUP AI & DATABASE ---
-@st.cache_resource
-def load_ai():
-    return SentenceTransformer('all-MiniLM-L6-v2')
-
-model = load_ai()
-chroma_client = chromadb.PersistentClient(path="./patent_database")
-collection = chroma_client.get_or_create_collection(name="uae_patents")
+# Boot up the system!
+model, collection = initialize_system()
 
 def scrape_moe_claims(patent_id):
-    try:
-        url = f"https://example-moe-site.gov.ae/patents/{patent_id}"
-        response = requests.get(url, timeout=10)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        claims_box = soup.find('div', class_='patent-claims')
-        return claims_box.text.strip() if claims_box else "Claims not found online."
-    except Exception as e:
-        return f"Error connecting to MoE: {e}"
+    return f"Live claims for Application {patent_id} will be fetched here from the MoE portal."
 
-# --- SIDEBAR (LOGIN & NAVIGATION) ---
+# 3. Sidebar & Login System
 with st.sidebar:
-    # Display your actual logo image
     st.image("logo.png", use_container_width=True)
-    st.markdown("---")
-    st.markdown("### User Authentication")
+    st.markdown("### User Sign In")
     
-    # Sleek login toggle
-    account_choice = st.radio("Access Level", ["Free Account", "Premium Account"])
-    st.session_state.account_type = account_choice
+    email = st.text_input("Email")
+    password = st.text_input("Password", type="password")
     
-    st.markdown("---")
-    st.caption("© 2026 Your Company Name. All rights reserved.")
-
-# --- MAIN PAGE DASHBOARD ---
-st.title("Patent Intelligence Platform")
-st.markdown("Identify similar patent applications and analyze freedom to operate.")
-
-# Use a sleek container for the search bar
-with st.container():
-    user_query = st.text_area("Enter abstract, keywords, or paste your application details here:", height=150)
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        search_clicked = st.button("🚀 Analyze Database")
-
-st.markdown("---")
-
-# --- SEARCH LOGIC ---
-if search_clicked and user_query:
-    with st.spinner("Analyzing proprietary vector database..."):
-        query_vector = model.encode([user_query]).tolist()
+    if 'account_type' not in st.session_state:
+        st.session_state.account_type = None
         
-        results = collection.query(
-            query_embeddings=query_vector,
-            n_results=5 
-        )
-        
-        st.subheader("Analysis Results")
-        
-        # FREE TIER
-        if st.session_state.account_type == "Free Account":
-            st.warning("🔒 Limited Free View")
-            st.metric(label="Highly Similar Patents Found", value=len(results['ids'][0]))
-            st.info("Upgrade to a Premium Account to unlock full patent titles, abstracts, classifications, and live claims scraping.")
-        
-        # PREMIUM TIER
-        elif st.session_state.account_type == "Premium Account":
-            st.success("🔓 Premium Access Authorized")
-            
-            for i in range(len(results['ids'][0])):
-                p_id = results['ids'][0][i]
-                meta = results['metadatas'][0][i]
+    if st.button("Log In / Sign Up"):
+        if password == "premium":
+            st.session_state.account_type = "Premium"
+            st.success("Welcome, Premium User!")
+        elif password != "":
+            st.session_state.account_type = "Free"
+            st.success("Welcome, Free User!")
+
+# 4. Main Search Interface
+st.title("AI-Powered Patent Search")
+
+if st.session_state.account_type:
+    st.markdown("Search our database to find similar patent applications.")
+    
+    user_query = st.text_area("1. Type keywords or abstract here:")
+    uploaded_file = st.file_uploader("2. OR Upload Patent File (PDF/TXT)", type=["txt", "pdf"])
+    
+    extracted_text = ""
+    if uploaded_file is not None:
+        if uploaded_file.name.endswith(".txt"):
+            extracted_text = uploaded_file.read().decode("utf-8")
+        elif uploaded_file.name.endswith(".pdf"):
+            pdf_reader = PyPDF2.PdfReader(uploaded_file)
+            for page in pdf_reader.pages:
+                extracted_text += page.extract_text()
                 
-                with st.expander(f"📄 Match: {meta['title']} (ID: {p_id})"):
-                    st.markdown(f"**Classification:** `{meta['classification']}`")
-                    st.markdown(f"**Abstract:** {meta['abstract']}")
+    final_search_text = extracted_text if extracted_text else user_query
+
+    if st.button("Search Database") and final_search_text:
+        with st.spinner("Scanning database..."):
+            query_vector = model.encode([final_search_text]).tolist()
+            results = collection.query(query_embeddings=query_vector, n_results=10)
+            
+            st.markdown("---")
+            st.subheader("Search Results")
+            
+            if st.session_state.account_type == "Free":
+                st.warning("🔒 Free Tier Restricted View")
+                st.info(f"We found **{len(results['ids'][0])} similar patent applications**.")
+                st.write("🌟 **Upgrade to a Premium Account** to view full details.")
+                
+            elif st.session_state.account_type == "Premium":
+                st.success("🔓 Premium Access: Showing Full Detailed Records")
+                for i in range(len(results['ids'][0])):
+                    app_id = results['ids'][0][i]
+                    meta = results['metadatas'][0][i]
                     
-                    st.markdown("#### 🌐 Live Claims (MoE Portal)")
-                    live_claims = scrape_moe_claims(p_id)
-                    st.code(live_claims, language="text")
+                    with st.expander(f"Hit #{i+1}: {meta['Title']} (App Number: {meta['Application Number']})"):
+                        st.markdown(f"**Application Number:** {meta['Application Number']}")
+                        st.markdown(f"**Application Date:** {meta['Application Date']}")
+                        st.markdown(f"**Title:** {meta['Title']}")
+                        st.markdown(f"**Abstract:** {meta['Abstract']}")
+                        st.markdown(f"**Priority Date:** {meta['Priority Date']}")
+                        st.markdown(f"**Earliest Priority Date:** {meta['Earliest Priority Date']}")
+                        st.markdown(f"**Priority Country:** {meta['Priority Country']}")
+                        st.markdown(f"**Priority Number:** {meta['Priority Number']}")
+                        st.markdown("---")
+                        st.markdown("### 🌐 Fetched Claims")
+                        st.code(scrape_moe_claims(meta['Application Number']))
+    elif st.button("Search Database") and not final_search_text:
+         st.error("Please enter text or upload a file first.")
+else:
+    st.info("Please log in on the left menu to use the search tool.")

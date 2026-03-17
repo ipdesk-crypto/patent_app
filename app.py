@@ -14,7 +14,15 @@ def initialize_system():
     model = SentenceTransformer('all-MiniLM-L6-v2')
     
     chroma_client = chromadb.Client() 
+    
+    # --- THE FIX: Clean up any "ghost" databases from previous crashes ---
+    try:
+        chroma_client.delete_collection(name="uae_patents")
+    except:
+        pass # If it doesn't exist, just ignore and move on
+        
     collection = chroma_client.create_collection(name="uae_patents")
+    # ---------------------------------------------------------------------
     
     if os.path.exists("patents.zip"):
         df = pd.read_csv("patents.zip", compression='zip')
@@ -49,7 +57,7 @@ def initialize_system():
             "Priority Number": str(row['Priority Number'])
         })
         
-        # THE FIX: We add the row index to the ID so it is 100% mathematically unique!
+        # We add the row index to the ID so it is 100% mathematically unique!
         unique_id = f"{row['Application Number']}_row_{index}"
         ids.append(unique_id)
         

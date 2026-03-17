@@ -9,18 +9,26 @@ import os
 st.set_page_config(page_title="Patent Intelligence", page_icon="logo.png", layout="wide")
 
 # 2. ALL-IN-ONE CLOUD DATABASE BUILDER
-# This tells Streamlit to only build the database once and remember it while the app is awake
-@st.cache_resource(show_spinner="Cloud Engine is reading patents.zip and building the AI database. Please wait...")
+@st.cache_resource(show_spinner="Cloud Engine is initializing the AI database. Please wait...")
 def initialize_system():
     # Load AI Model
     model = SentenceTransformer('all-MiniLM-L6-v2')
     
     # Setup Temporary Cloud Database
-    chroma_client = chromadb.Client() # In-memory database for the cloud
+    chroma_client = chromadb.Client() 
     collection = chroma_client.create_collection(name="uae_patents")
     
-    # Read the zipped file directly
-    df = pd.read_csv("patents.zip", compression='zip')
+    # --- UPGRADED BULLETPROOF FILE LOADER ---
+    if os.path.exists("patents.zip"):
+        df = pd.read_csv("patents.zip", compression='zip')
+    elif os.path.exists("patents.csv"):
+        df = pd.read_csv("patents.csv")
+    else:
+        # Graceful error handling instead of a crash
+        st.error("🚨 Error: The database file could not be found. Please ensure 'patents.zip' or 'patents.csv' is uploaded to your GitHub repository.")
+        st.stop() # Stops the app from crashing further
+    
+    # Fill empty cells to prevent crashes
     df = df.fillna("N/A")
     
     documents = []
@@ -59,7 +67,12 @@ def scrape_moe_claims(patent_id):
 
 # 3. Sidebar & Login System
 with st.sidebar:
-    st.image("logo.png", use_container_width=True)
+    # Check if logo exists before trying to display it to prevent errors
+    if os.path.exists("logo.png"):
+        st.image("logo.png", use_container_width=True)
+    else:
+        st.markdown("### Your Company Logo")
+        
     st.markdown("### User Sign In")
     
     email = st.text_input("Email")
@@ -75,6 +88,8 @@ with st.sidebar:
         elif password != "":
             st.session_state.account_type = "Free"
             st.success("Welcome, Free User!")
+        else:
+            st.error("Please enter a password.")
 
 # 4. Main Search Interface
 st.title("AI-Powered Patent Search")
@@ -96,38 +111,39 @@ if st.session_state.account_type:
                 
     final_search_text = extracted_text if extracted_text else user_query
 
-    if st.button("Search Database") and final_search_text:
-        with st.spinner("Scanning database..."):
-            query_vector = model.encode([final_search_text]).tolist()
-            results = collection.query(query_embeddings=query_vector, n_results=10)
-            
-            st.markdown("---")
-            st.subheader("Search Results")
-            
-            if st.session_state.account_type == "Free":
-                st.warning("🔒 Free Tier Restricted View")
-                st.info(f"We found **{len(results['ids'][0])} similar patent applications**.")
-                st.write("🌟 **Upgrade to a Premium Account** to view full details.")
+    if st.button("Search Database"):
+        if final_search_text:
+            with st.spinner("Scanning database..."):
+                query_vector = model.encode([final_search_text]).tolist()
+                results = collection.query(query_embeddings=query_vector, n_results=10)
                 
-            elif st.session_state.account_type == "Premium":
-                st.success("🔓 Premium Access: Showing Full Detailed Records")
-                for i in range(len(results['ids'][0])):
-                    app_id = results['ids'][0][i]
-                    meta = results['metadatas'][0][i]
+                st.markdown("---")
+                st.subheader("Search Results")
+                
+                if st.session_state.account_type == "Free":
+                    st.warning("🔒 Free Tier Restricted View")
+                    st.info(f"We found **{len(results['ids'][0])} similar patent applications**.")
+                    st.write("🌟 **Upgrade to a Premium Account** to view full details.")
                     
-                    with st.expander(f"Hit #{i+1}: {meta['Title']} (App Number: {meta['Application Number']})"):
-                        st.markdown(f"**Application Number:** {meta['Application Number']}")
-                        st.markdown(f"**Application Date:** {meta['Application Date']}")
-                        st.markdown(f"**Title:** {meta['Title']}")
-                        st.markdown(f"**Abstract:** {meta['Abstract']}")
-                        st.markdown(f"**Priority Date:** {meta['Priority Date']}")
-                        st.markdown(f"**Earliest Priority Date:** {meta['Earliest Priority Date']}")
-                        st.markdown(f"**Priority Country:** {meta['Priority Country']}")
-                        st.markdown(f"**Priority Number:** {meta['Priority Number']}")
-                        st.markdown("---")
-                        st.markdown("### 🌐 Fetched Claims")
-                        st.code(scrape_moe_claims(meta['Application Number']))
-    elif st.button("Search Database") and not final_search_text:
-         st.error("Please enter text or upload a file first.")
+                elif st.session_state.account_type == "Premium":
+                    st.success("🔓 Premium Access: Showing Full Detailed Records")
+                    for i in range(len(results['ids'][0])):
+                        app_id = results['ids'][0][i]
+                        meta = results['metadatas'][0][i]
+                        
+                        with st.expander(f"Hit #{i+1}: {meta['Title']} (App Number: {meta['Application Number']})"):
+                            st.markdown(f"**Application Number:** {meta['Application Number']}")
+                            st.markdown(f"**Application Date:** {meta['Application Date']}")
+                            st.markdown(f"**Title:** {meta['Title']}")
+                            st.markdown(f"**Abstract:** {meta['Abstract']}")
+                            st.markdown(f"**Priority Date:** {meta['Priority Date']}")
+                            st.markdown(f"**Earliest Priority Date:** {meta['Earliest Priority Date']}")
+                            st.markdown(f"**Priority Country:** {meta['Priority Country']}")
+                            st.markdown(f"**Priority Number:** {meta['Priority Number']}")
+                            st.markdown("---")
+                            st.markdown("### 🌐 Fetched Claims")
+                            st.code(scrape_moe_claims(meta['Application Number']))
+        else:
+             st.error("Please enter text or upload a file first.")
 else:
     st.info("Please log in on the left menu to use the search tool.")
